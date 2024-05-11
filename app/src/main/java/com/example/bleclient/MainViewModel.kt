@@ -1,123 +1,87 @@
 package com.example.bleclient
 
 import android.annotation.SuppressLint
-import android.annotation.TargetApi
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
-import android.bluetooth.le.ScanSettings
-import android.os.Build
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.juul.kable.Scanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.time.LocalDateTime
-import java.util.Calendar
-import java.util.Date
-import java.util.UUID
+
+data class MainUiState(
+    val isConnected: Boolean = false,
+    val deviceScan: List<BluetoothDevice> = listOf()
+//    val bleSelected:
+)
 
 @SuppressLint("MissingPermission")
 class MainViewModel(private val bleManager: BleManager) : ViewModel() {
 
-    val CURRENT_TIME_SERVICE_UUID = UUID.fromString("00001805-0000-1000-8000-00805f9b34fb")
-    val CURRENT_TIME_CHARACTERISTIC_UUID = UUID.fromString("00002A2B-0000-1000-8000-00805f9b34fb")
+    private val _uiState = MutableStateFlow(MainUiState())
+    val uiState = _uiState.asStateFlow()
 
     val isEnableBluetoothAdapter by lazy {
         bleManager.bluetoothAdapter.isEnabled
     }
 
-    private val _deviceScan = MutableStateFlow<List<BluetoothDevice>>(emptyList())
-    val deviceScan: StateFlow<List<BluetoothDevice>> = _deviceScan
-
     private var bluetoothGatt: BluetoothGatt? = null
 
     fun scanBle() {
-        val scanSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-
-        bleManager.scan(scanSettings, scanCallback)
+        bleManager.scan(scanCallback)
     }
 
-    fun stopBle() {
+    fun stopScanBle() {
         bleManager.stop(scanCallback)
     }
 
     fun connectToDevice(device: BluetoothDevice) {
-        stopBle()
+        stopScanBle()
         bleManager.connect(device, gattCallback)
-    }
-
-    fun readCharacteristic(gatt: BluetoothGatt) {
-        val batteryLevelChar = gatt
-            .getService(CURRENT_TIME_SERVICE_UUID)?.getCharacteristic(CURRENT_TIME_CHARACTERISTIC_UUID)
-
-        if (batteryLevelChar?.isReadable() == true) {
-            gatt.readCharacteristic(batteryLevelChar)
-        }
     }
 
     fun writeCharacteristic() {
         try {
             bluetoothGatt?.let { gatt ->
-                val characteristic = bluetoothGatt?.getService(CURRENT_TIME_SERVICE_UUID)?.getCharacteristic(CURRENT_TIME_CHARACTERISTIC_UUID)
-
-                val writeType = when {
-                    characteristic?.isWritable() == true -> BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                    characteristic?.isWritableWithoutResponse() == true -> {
-                        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                    }
-
-                    else -> error("Characteristic ${characteristic?.uuid} cannot be written to")
-                }
-
                 val currentTimeMillis = System.currentTimeMillis()
                 val buffer = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
                 buffer.putLong(currentTimeMillis)
                 val payload = buffer.array()
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeCharacteristic(characteristic, payload, writeType)
-                } else {
-                    // Fall back to deprecated version of writeCharacteristic for Android <13
-                    legacyCharacteristicWrite(gatt, characteristic, payload, writeType)
-                }
+                bleManager.write(bluetoothGatt = gatt, payload)
+
             }
         } catch (ex: Exception) {
             ex.printStackTrace()
         }
     }
 
-    @TargetApi(Build.VERSION_CODES.S)
-    @Suppress("DEPRECATION")
-    private fun legacyCharacteristicWrite(
-        gatt: BluetoothGatt,
-        characteristic: BluetoothGattCharacteristic,
-        value: ByteArray,
-        writeType: Int
-    ) {
-        characteristic.writeType = writeType
-        characteristic.value = value
-        gatt.writeCharacteristic(characteristic)
-    }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             Log.i("BleManager", "Found BLE device! Name: ${{ result.device.name }}, address: ${result.device.address}")
-            if (result.device.name != null && !_deviceScan.value.contains(result.device))
-                _deviceScan.update { it + result.device }
+            if (result.device.name != null && !_uiState.value.deviceScan.contains(result.device)) {
+                val currentList = _uiState.value.deviceScan.toMutableList()
+                currentList.add(result.device)
+                viewModelScope.launch(Dispatchers.IO) {
+                    _uiState.emit(
+                        _uiState.value.copy(deviceScan = currentList)
+                    )
+                }
+            }
         }
     }
 
@@ -128,12 +92,17 @@ class MainViewModel(private val bleManager: BleManager) : ViewModel() {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     Log.w("BluetoothGattCallback", "Successfully connected to $deviceAddress")
                     bluetoothGatt = gatt
-                    viewModelScope.launch(Dispatchers.Main) {
-                        gatt.discoverServices()
+                    gatt.discoverServices()
+
+                    viewModelScope.launch(Dispatchers.IO) {
+                        _uiState.emit(
+                            _uiState.value.copy(isConnected = true)
+                        )
                     }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     Log.w("BluetoothGattCallback", "Successfully disconnected from $deviceAddress")
                     gatt.close()
+                    bluetoothGatt = null
                 }
             } else {
                 Log.w("BluetoothGattCallback", "Error $status encountered for $deviceAddress! Disconnecting...")
@@ -144,114 +113,52 @@ class MainViewModel(private val bleManager: BleManager) : ViewModel() {
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             super.onServicesDiscovered(gatt, status)
             gatt?.printGattTable()
-            gatt?.let { readCharacteristic(it) }
+            gatt?.let { bleManager.enableNotifications(it) }
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int) {
+            super.onDescriptorWrite(gatt, descriptor, status)
+            val uuid = descriptor?.uuid.toString()
+            Log.d("BluetoothGattCallback", "onDescriptorWrite uuid: $uuid")
+            Log.d("BluetoothGattCallback", "onDescriptorWrite status: $status")
+            if (status == BluetoothGatt.GATT_SUCCESS && uuid == BleManager.CCC_DESCRIPTOR_UUID) {
+
+            }
+        }
+
+        // For Characteristic have response
+        override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
+            super.onCharacteristicWrite(gatt, characteristic, status)
+            Log.d("BluetoothGattCallback", "onCharacteristicWrite uuid: ${characteristic?.uuid}")
+            Log.d("BluetoothGattCallback", "onCharacteristicWrite status: $status")
         }
 
         @Deprecated("Deprecated for Android 13+")
         @Suppress("DEPRECATION")
-        override fun onCharacteristicRead(
+        override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            status: Int
+            characteristic: BluetoothGattCharacteristic
         ) {
             with(characteristic) {
-                when (status) {
-                    BluetoothGatt.GATT_SUCCESS -> {
-                        Log.i("BluetoothGattCallback", "Read characteristic $uuid:\n${value}")
-                    }
-
-                    BluetoothGatt.GATT_READ_NOT_PERMITTED -> {
-                        Log.e("BluetoothGattCallback", "Read not permitted for $uuid!")
-                    }
-
-                    else -> {
-                        Log.e("BluetoothGattCallback", "Characteristic read failed for $uuid, error: $status")
-                    }
-                }
+                Log.i("BluetoothGattCallback", "Characteristic $uuid changed | value: ${value.toHexString()}")
             }
         }
 
-        override fun onCharacteristicRead(
+        override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
-            value: ByteArray,
-            status: Int
+            value: ByteArray
         ) {
-            val uuid = characteristic.uuid
-            when (status) {
-                BluetoothGatt.GATT_SUCCESS -> {
-                    Log.i("BluetoothGattCallback", "Read characteristic $uuid:\n${value}")
-
-                    val YEAR = value[0].toUInt() // Giả sử byte đầu tiên là giây
-                    val MONTH = value[2].toUInt() // Giả sử byte thứ hai là phút
-                    val DATE = value[3].toUInt() // Giả sử byte thứ ba là giờ
-                    val HOUR_OF_DAY = value[4].toUInt() // Giả sử byte thứ tư là ngày
-                    val MINUTE = value[5].toUInt() // Giả sử byte thứ năm là tháng
-
-
-                    val dateTime = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        LocalDateTime.of(YEAR.toInt(), MONTH.toInt(), DATE.toInt(), HOUR_OF_DAY.toInt(), MINUTE.toInt()).toString()
-                    } else {
-                        ""
-                    }
-
-                    Log.i(
-                        "BluetoothGattCallback", "Read characteristic $uuid:\n${dateTime}"
-                    )
-                }
-
-                BluetoothGatt.GATT_READ_NOT_PERMITTED -> {
-                    Log.e("BluetoothGattCallback", "Read not permitted for $uuid!")
-                }
-
-                else -> {
-                    Log.e("BluetoothGattCallback", "Characteristic read failed for $uuid, error: $status")
-                }
-            }
-        }
-
-        override fun onCharacteristicWrite(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            status: Int
-        ) {
+            val newValueHex = value.toHexString()
             with(characteristic) {
-                val value = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                    characteristic.value
-                } else {
-
-                    //TODO fix issue
-                    ByteArray(10)
-                }
-                when (status) {
-                    BluetoothGatt.GATT_SUCCESS -> {
-                        Log.i("BluetoothGattCallback", "Wrote to characteristic $uuid | value: ${value.toHexString()}")
-                    }
-
-                    BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH -> {
-                        Log.e("BluetoothGattCallback", "Write exceeded connection ATT MTU!")
-                    }
-
-                    BluetoothGatt.GATT_WRITE_NOT_PERMITTED -> {
-                        Log.e("BluetoothGattCallback", "Write not permitted for $uuid!")
-                    }
-
-                    else -> {
-                        Log.e("BluetoothGattCallback", "Characteristic write failed for $uuid, error: $status")
-                    }
-                }
+                Log.i("BluetoothGattCallback", "Characteristic $uuid changed | value: $newValueHex")
             }
         }
+    }
 
-        override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
-            if (gatt != null && characteristic != null) {
-                onCharacteristicChanged(gatt, characteristic, characteristic.value)
-            }
-        }
-
-        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
-            Log.i("BluetoothGattCallback", "Wrote to characteristic ${characteristic.uuid} | value: ${value.toHexString()}")
-        }
+    override fun onCleared() {
+        super.onCleared()
+        stopScanBle()
     }
 }
 
