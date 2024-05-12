@@ -1,5 +1,7 @@
 package com.example.bleclient
 
+import android.util.Log
+
 enum class ControlFlag(val value: Int) {
     CONTROL_0(0),
     CONTROL_1(1),
@@ -29,6 +31,8 @@ data class BlePacketModel(val controlFrag: ControlFlag, val responseFrag: Respon
                     (bleData.moreFrag.value shl 4) or
                     (bleData.id and 0x07 shl 1) or
                     (bleData.dataSize shr 8)
+
+            Log.d("TAG", "createByteArray:${headerByteFirst} ")
 
             val headerByteSecond = (bleData.data.size and 0xFF)
 

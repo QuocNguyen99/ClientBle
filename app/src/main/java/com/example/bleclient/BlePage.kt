@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -34,6 +35,10 @@ import java.util.Date
 fun BlePage(viewModel: MainViewModel, hasRequiredBluetoothPermissions: () -> Boolean, requestRelevantRuntimePermissions: () -> Unit) {
     val uiState by viewModel.uiState.collectAsState()
 
+    LaunchedEffect(key1 = null) {
+        viewModel.sendPassword()
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(modifier = Modifier.fillMaxSize()) {
             LazyColumn(modifier = Modifier
@@ -46,7 +51,7 @@ fun BlePage(viewModel: MainViewModel, hasRequiredBluetoothPermissions: () -> Boo
                             modifier = Modifier.combinedClickable(
                                 onClick = { viewModel.connectToDevice(it) },
                                 onLongClick = {
-                                    viewModel.writeCharacteristic()
+                                    viewModel.sendPassword()
                                 })
                         )
                     }
@@ -71,8 +76,10 @@ fun BlePage(viewModel: MainViewModel, hasRequiredBluetoothPermissions: () -> Boo
 
         if (uiState.isConnected)
             AlertDialog(onDismissRequest = {},
-                confirmButton = { Button(onClick = { viewModel.writeCharacteristic() }) {
-                    Text(text = "Connected")
-                }})
+                confirmButton = {
+                    Button(onClick = { viewModel.sendPassword() }) {
+                        Text(text = "Connected")
+                    }
+                })
     }
 }

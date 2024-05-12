@@ -39,6 +39,7 @@ class MainViewModel(private val bleManager: BleManager) : ViewModel() {
     }
 
     private var bluetoothGatt: BluetoothGatt? = null
+    private var mtuSize = 23 //Default
 
     fun scanBle() {
         bleManager.scan(scanCallback)
@@ -53,26 +54,63 @@ class MainViewModel(private val bleManager: BleManager) : ViewModel() {
         bleManager.connect(device, gattCallback)
     }
 
-    fun writeCharacteristic() {
+    fun sendPassword(password: String = "thisispasswordofwifisamsung") {
         try {
-            bluetoothGatt?.let { gatt ->
-                val currentTimeMillis = System.currentTimeMillis()
-                val buffer = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
-                buffer.putLong(currentTimeMillis)
-                val payload = buffer.array()
+            val payload = password.toByteArray()
+            val wifiApPacket = BlePacketModel(
+                controlFrag = ControlFlag.CONTROL_0,
+                responseFrag = ResponseFlag.RESPONSE_0,
+                idType = IDType.ID_TYPE_0,
+                moreFrag = MoreFlag.MORE_1,
+                id = 0,
+                dataSize = payload.size,
+                cid = decimalToBinary(20).toByte(2),
+                data = payload
+            )
 
-                bleManager.write(bluetoothGatt = gatt, payload)
+            val data = BlePacketModel.createByteArray(wifiApPacket)
+            Log.d("BluetoothGattCallback", "writeCharacteristic data: ${data.joinToString(separator = " ") { byte ->
+                byte.toString(2).padStart(8, '0') // Chuyển đổi byte thành chuỗi nhị phân
+            }}")
 
-            }
+
+//            bluetoothGatt?.let { gatt ->
+//                val payload = password.toByteArray()
+//
+//                Log.d("BluetoothGattCallback", "writeCharacteristic payload: ${payload.size}")
+//
+//                val bleCommunication = BleCommunication()
+//                val numberFragmentPacket = bleCommunication.checkNumberFragment(payload, mtuSize)
+//
+//                if (numberFragmentPacket == 1) {
+//                    val wifiApPacket = BlePacketModel(
+//                        controlFrag = ControlFlag.CONTROL_0,
+//                        responseFrag = ResponseFlag.RESPONSE_0,
+//                        idType = IDType.ID_TYPE_0,
+//                        moreFrag = MoreFlag.MORE_1,
+//                        id = 0,
+//                        dataSize = payload.size,
+//                        cid = decimalToBinary(20).toByte(2),
+//                        data = payload
+//                    )
+//
+//                    val data = BlePacketModel.createByteArray(wifiApPacket)
+//                    Log.d("BluetoothGattCallback", "writeCharacteristic data: $data")
+//
+//
+//                    bleManager.write(bluetoothGatt = gatt, BlePacketModel.createByteArray(wifiApPacket))
+//                } else {
+//
+//                }
+//            }
         } catch (ex: Exception) {
             ex.printStackTrace()
         }
     }
 
-
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            Log.i("BleManager", "Found BLE device! Name: ${{ result.device.name }}, address: ${result.device.address}")
+            Log.i("BluetoothGattCallback", "Found BLE device! Name: ${{ result.device.name }}, address: ${result.device.address}")
             if (result.device.name != null && !_uiState.value.deviceScan.contains(result.device)) {
                 val currentList = _uiState.value.deviceScan.toMutableList()
                 currentList.add(result.device)
@@ -112,8 +150,21 @@ class MainViewModel(private val bleManager: BleManager) : ViewModel() {
 
         override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
             super.onServicesDiscovered(gatt, status)
-            gatt?.printGattTable()
-            gatt?.let { bleManager.enableNotifications(it) }
+            gatt?.let {
+                it.printGattTable()
+                it.let { bleManager.enableNotifications(it) }
+                it.requestMtu(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            super.onMtuChanged(gatt, mtu, status)
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d("BluetoothGattCallback", "onMtuChanged mtuSize: $mtuSize")
+                mtuSize = mtu
+            } else {
+                Log.e("BluetoothGattCallback", "onMtuChanged status: $status")
+            }
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt?, descriptor: BluetoothGattDescriptor?, status: Int) {
@@ -160,6 +211,16 @@ class MainViewModel(private val bleManager: BleManager) : ViewModel() {
         super.onCleared()
         stopScanBle()
     }
+}
+
+fun decimalToBinary(decimalNumber: Int): String {
+    // Chuyển đổi số thập phân thành chuỗi nhị phân
+    val binaryString = Integer.toBinaryString(decimalNumber)
+
+    // Bổ sung các số 0 để đảm bảo độ dài của chuỗi là 8 bit
+    val paddedBinaryString = binaryString.padStart(8, '0')
+
+    return paddedBinaryString
 }
 
 
